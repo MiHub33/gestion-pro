@@ -1,1 +1,1 @@
-streamlit, pandas, fpdf
+streamlit, pandas, fpdf2
