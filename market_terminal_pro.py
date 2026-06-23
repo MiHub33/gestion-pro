@@ -188,7 +188,9 @@ with tabs[1]:
     with c_ctrl1: act_ses = st.selectbox("Activo para Mapa de Sesiones", list(activos.keys()), key="s1")
     with c_ctrl2: filtro_temporal = st.radio("Historial:", ["Diario (5 Días)", "Semanal (14 Días)"], horizontal=True, key="ses_radio")
     
-    df_ses = mapear_sesiones(datos[act_ses]["M15"])
+    # FIX: Se comprueba que los datos existan antes de llamar a ["M15"]
+    df_ses = mapear_sesiones(datos[act_ses]["M15"] if datos[act_ses] else None)
+    
     if not df_ses.empty:
         df_ses = df_ses.head(5) if "Diario" in filtro_temporal else df_ses.head(14)
         rows = ""
@@ -207,135 +209,4 @@ with tabs[2]:
         adr_20d = df_d1['Rango'].shift(1).tail(20).mean()
         rango_hoy = df_d1['Rango'].iloc[-1]
         
-        df_w1 = dm["W1"].copy()
-        df_w1['Rango'] = df_w1['High'] - df_w1['Low']
-        awr_4w = df_w1['Rango'].tail(4).mean()
-        awr_12w = df_w1['Rango'].tail(12).mean()
-
-        pct = (rango_hoy/adr_20d*100) if adr_20d>0 else 0
-        fmt = ".2f" if act_met in ["NASDAQ", "BTC"] else ".4f"
-        
-        if pct >= 90:
-            bg, br, msg, acc = "rgba(239, 83, 80, 0.15)", "#ef5350", "🔴 MOVIMIENTO AGOTADO (REVERSIÓN)", "El mercado consumió su rango diario. NO buscar continuaciones. Riesgo extremo."
-        elif pct >= 70:
-            bg, br, msg, acc = "rgba(255, 167, 38, 0.15)", "#ffa726", "⚠️ AL LÍMITE DE EXPANSIÓN", f"Reducir lotaje. Quedan max {max(0, adr_20d-rango_hoy):.2f} puntos seguros."
-        else:
-            bg, br, msg, acc = "rgba(38, 166, 154, 0.15)", "#26a69a", "🟢 RECORRIDO DISPONIBLE (VÍA LIBRE)", f"Vía libre para buscar {max(0, adr_20d-rango_hoy):.2f} puntos de profit."
-            
-        html_hud = f"""<div style="background:{bg}; border:1px solid {br}; padding:20px; border-radius:10px; text-align:center; margin-bottom:20px;"><h2>{msg}</h2><p>Rango Hoy: <b>{rango_hoy:{fmt}}</b> / ADR Histórico: <b>{adr_20d:{fmt}}</b> ({pct:.1f}%)</p><p style="color:{br}; font-size:18px; margin:0;">🎯 <b>ACCIONABLE:</b> {acc}</p></div>"""
-        st.markdown(html_hud.replace('\n', ''), unsafe_allow_html=True)
-
-        html_tabla = f"""<table class="stat-table"><tr><th>Período de Análisis</th><th>Métrica de Control</th><th>Valor (Puntos)</th><th>Diagnóstico</th></tr><tr><td><b>DIARIO (Corto Plazo)</b></td><td>ADR Promedio (Últimos 5 Días)</td><td>{adr_5d:{fmt}}</td><td>Mide la volatilidad reciente para TP intradía.</td></tr><tr><td><b>DIARIO (Medio Plazo)</b></td><td>ADR Histórico (Últimos 20 Días)</td><td>{adr_20d:{fmt}}</td><td>Rango de expansión promedio mensual (Techo).</td></tr><tr><td><b>SEMANAL (Estructura)</b></td><td>AWR Promedio (Último Mes)</td><td>{awr_4w:{fmt}}</td><td>Rango promedio de lunes a viernes.</td></tr><tr><td><b>MENSUAL (Macro)</b></td><td>AWR Trimestral (Últimas 12 Sem.)</td><td>{awr_12w:{fmt}}</td><td>Sesgo de distribución institucional mayor.</td></tr></table>"""
-        st.markdown(html_tabla.replace('\n', ''), unsafe_allow_html=True)
-
-# PESTAÑA 4: COINCIDENCIAS Y REPORTES
-with tabs[3]:
-    c_analisis, c_reporte = st.columns([7, 3])
-    with c_analisis:
-        c1, c2, c3 = st.columns(3)
-        with c1: act_sel = st.selectbox("Activo", ["NASDAQ", "LINK"], key="est_sel")
-        with c2: macro_tf = st.selectbox("Temp. Mayor", ["W1", "D1", "H4", "H1", "M30", "M15"])
-        with c3: micro_tf = st.selectbox("Temp. Menor", ["H1", "M30", "M15", "M5"])
-        
-        d_sel = datos[act_sel]
-        interval_mapping = {"H1": "1h", "M30": "30min", "M15": "15min", "M5": "5min"}
-        if d_sel is not None and macro_tf != micro_tf:
-            df_macro, df_micro = d_sel[macro_tf].copy(), d_sel[micro_tf].copy()
-            if not df_macro.empty and not df_micro.empty and len(df_macro)>=200 and len(df_micro)>=200:
-                df_macro['EMA200'] = df_macro['Close'].ewm(span=200, adjust=False).mean()
-                df_micro['EMA200'] = df_micro['Close'].ewm(span=200, adjust=False).mean()
-                df_macro['Macro_Bull'] = df_macro['Close'] > df_macro['EMA200']
-                df_micro['Micro_Bull'] = df_micro['Close'] > df_micro['EMA200']
-                target_resample = interval_mapping.get(micro_tf, "15min")
-                df_macro_res = df_macro[['Macro_Bull']].resample(target_resample).ffill()
-                df_total = df_micro.join(df_macro_res, how='inner')
-                df_total['Next_Return'] = df_total['Close'].shift(-1) - df_total['Close']
-                c_alc = df_total[(df_total['Micro_Bull'] == True) & (df_total['Macro_Bull'] == True)]
-                c_baj = df_total[(df_total['Micro_Bull'] == False) & (df_total['Macro_Bull'] == False)]
-                len_alc, len_baj = len(c_alc), len(c_baj)
-                efectividad_alc = (c_alc['Next_Return'] > 0).sum() / len_alc * 100 if len_alc > 0 else 0
-                efectividad_baj = (c_baj['Next_Return'] < 0).sum() / len_baj * 100 if len_baj > 0 else 0
-                html_table = f"""<table class="stat-table"><tr><th>Combinación Seleccionada</th><th>Estado de Confluencia</th><th>Muestras Acumuladas</th><th>Efectividad</th></tr><tr><td><b>{macro_tf} + {micro_tf}</b></td><td><span class="bull">Ambas Alcistas</span></td><td>{len_alc} velas</td><td>El precio continuó al <b>ALZA</b> el <span class="bull"><b>{efectividad_alc:.1f}%</b></span> de las veces.</td></tr><tr><td><b>{macro_tf} + {micro_tf}</b></td><td><span class="bear">Ambas Bajistas</span></td><td>{len_baj} velas</td><td>El precio continuó a la <span class="bear"><b>BAJA</b></span> el <span class="bear"><b>{efectividad_baj:.1f}%</b></span> de las veces.</td></tr></table>"""
-                st.markdown(html_table.replace('\n', ''), unsafe_allow_html=True)
-
-    with c_reporte:
-        st.write("### 🖨️ Reportes")
-        tipo_reporte = st.radio("Período:", ["Semanal", "Mensual"])
-        try:
-            if st.button("💾 Generar PDF"):
-                pdf = ReportePDF()
-                pdf.add_page()
-                pdf.set_text_color(40, 40, 40)
-                pdf.set_font('helvetica', 'B', 16)
-                pdf.cell(0, 10, f"Reporte {tipo_reporte} - {act_sel}", 0, 1)
-                pdf.set_font('helvetica', '', 12)
-                pdf.cell(0, 8, f"Temporalidades: {macro_tf} vs {micro_tf}", 0, 1)
-                pdf_bytes = bytes(pdf.output())
-                b64 = base64.b64encode(pdf_bytes).decode()
-                st.markdown(f'<a href="data:application/pdf;base64,{b64}" download="Reporte_{act_sel}.pdf" style="text-decoration:none; padding:10px; background-color:#2962ff; color:white; border-radius:5px;">📥 Descargar PDF</a>', unsafe_allow_html=True)
-        except:
-            st.error("Función PDF disponible tras configurar requirements.txt")
-
-# PESTAÑA 5: GATILLOS PRAGMÁTICOS CON CEREBRO DINÁMICO
-with tabs[4]:
-    act_gat = st.selectbox("Activo a Operar", ["NASDAQ", "LINK", "BTC"], key="s3")
-    
-    # Motor de lectura de Sweep en vivo
-    df_ses_gat = mapear_sesiones(datos[act_gat]["M15"])
-    dir_nyam = "al cambio de estructura (CHoCH)"
-    
-    if not df_ses_gat.empty:
-        sw_hoy = str(df_ses_gat['LON_vs_ASI'].iloc[0])
-        if "Máximo" in sw_hoy: 
-            dir_nyam = "en 🔴 <b>SHORT (Vender)</b>"
-        elif "Mínimo" in sw_hoy: 
-            dir_nyam = "en 🟢 <b>LONG (Comprar)</b>"
-        elif "Ambos" in sw_hoy: 
-            dir_nyam = "esperando confirmación (Alta volatilidad)"
-        else: 
-            dir_nyam = "a favor del Bias de H1 (Sin Sweep previo)"
-
-    # Instrucciones
-    if act_gat == "NASDAQ":
-        asia = "💤 <b>NO OPERAR M5.</b> Solo marcar Máximo y Mínimo del rango en H1."
-        londres = "👁️ <b>VIGILAR.</b> Esperar que el precio rompa el Máximo o Mínimo de Asia (Sweep)."
-        nyam = f"🔫 <b>GATILLO PRINCIPAL:</b> Si Semáforo Verde -> Entrar en M5 {dir_nyam}. <b>Target: 30 a 50 puntos.</b>"
-        nypm = "🛑 <b>CONTROL:</b> Si Semáforo Rojo -> Buscar Reversión en M5. Si Verde -> Mantener operación a favor de la mañana."
-    elif act_gat == "LINK":
-        asia = "🔫 <b>GATILLO RANGO:</b> Operar los extremos. Comprar en piso o vender en techo si hay rechazo en M15. <b>Target: 50 a 100 puntos.</b>"
-        londres = "👁️ <b>VIGILAR.</b> Esperar cacería de stops del rango asiático."
-        nyam = f"🔫 <b>GATILLO TENDENCIA:</b> Evaluar Sweep. Entrar {dir_nyam} apoyado en FVG de M5."
-        nypm = "📈 <b>CONTINUACIÓN:</b> Seguir la tendencia de la mañana si el ADR lo permite."
-    else: # BTC
-        asia = "👁️ <b>VIGILAR H1.</b> Acompañar la dirección de la EMA 200 en temporalidad mayor."
-        londres = "🛑 <b>CONTROL.</b> Alta manipulación. No anticipar el movimiento."
-        nyam = f"🔫 <b>GATILLO SINCRONIZADO:</b> Buscar gatillo {dir_nyam} <b>solo si</b> el NASDAQ también acompaña."
-        nypm = "💰 <b>TOMA DE GANANCIAS.</b> Cerrar posiciones abiertas. No iniciar operaciones nuevas."
-
-    st.markdown(f"""
-    <div style="background-color: rgba(28, 32, 48, 0.9); border-left: 5px solid #2962ff; padding: 25px; border-radius: 8px;">
-        <h2 style="color: #ffffff; margin-top: 0; margin-bottom: 20px;">Instrucciones Directas: {act_gat}</h2>
-        <div style="margin-bottom: 15px; font-size: 16px;">
-            <div style="color: #b2b5be; margin-bottom: 5px;">🌙 <b>ASIA (19:00 - 02:00 EST):</b></div>
-            <div style="color: #ffffff; padding-left: 20px;">{asia}</div>
-        </div>
-        <div style="margin-bottom: 15px; font-size: 16px;">
-            <div style="color: #b2b5be; margin-bottom: 5px;">🌅 <b>LONDRES (02:00 - 08:30 EST):</b></div>
-            <div style="color: #ffffff; padding-left: 20px;">{londres}</div>
-        </div>
-        <div style="margin-bottom: 15px; font-size: 16px;">
-            <div style="color: #26a69a; margin-bottom: 5px;">☀️ <b>NUEVA YORK AM (08:30 - 12:00 EST):</b></div>
-            <div style="color: #ffffff; padding-left: 20px;">{nyam}</div>
-        </div>
-        <div style="font-size: 16px;">
-            <div style="color: #ffa726; margin-bottom: 5px;">🌇 <b>NUEVA YORK PM (13:30 - 16:00 EST):</b></div>
-            <div style="color: #ffffff; padding-left: 20px;">{nypm}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# BOTÓN GLOBAL
-st.write("")
-if st.button("🔄 Refrescar Terminal"):
-    st.cache_data.clear()
-    st.rerun()
+        df
